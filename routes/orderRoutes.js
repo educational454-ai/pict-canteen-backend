@@ -88,11 +88,12 @@ router.post('/place', async (req, res) => {
     }
 });
 
-// Fetch orders for a specific department's report 
+//Fetch orders for a specific department's report (Used by Coordinator)
 router.get('/department/:deptId', async (req, res) => {
     try {
         const orders = await Order.find({ departmentId: req.params.deptId })
-            .populate('facultyId', 'fullName voucherCode')
+            // 🚀 THE FIX: Added 'academicYear' to the populated fields list
+            .populate('facultyId', 'fullName voucherCode academicYear') 
             .sort({ orderDate: -1 }); 
             
         res.status(200).json(orders);
@@ -101,11 +102,12 @@ router.get('/department/:deptId', async (req, res) => {
     }
 });
 
-// GET ALL Orders (For Canteen Manager / Admin)
+//GET ALL Orders (For Canteen Manager / Admin)
 router.get('/all', async (req, res) => {
     try {
         const orders = await Order.find()
-            .populate('facultyId', 'fullName voucherCode') 
+            // 🚀 THE FIX: Added 'academicYear' here as well
+            .populate('facultyId', 'fullName voucherCode academicYear') 
             .populate('departmentId', 'name')
             .sort({ createdAt: -1 })
             .lean(); 
