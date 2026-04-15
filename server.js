@@ -63,6 +63,15 @@ app.get('/', (req, res) => {
     res.send("Welcome to the PICT Canteen API! The backend is working.");
 });
 
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'pict-canteen-backend',
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: Math.floor(process.uptime())
+    });
+});
+
 server.listen(PORT, () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
 });
