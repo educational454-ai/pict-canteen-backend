@@ -4,6 +4,13 @@ const Order = require('../models/Order');
 const Faculty = require('../models/Faculty');
 const Guest = require('../models/Guest');
 
+const emitOrderEvent = (req, eventName, payload) => {
+    const io = req.app.get('io');
+    if (io) {
+        io.emit(eventName, payload);
+    }
+};
+
 router.post('/place', async (req, res) => {
     try {
         const { voucherCode, items, totalAmount } = req.body;
@@ -80,6 +87,10 @@ router.post('/place', async (req, res) => {
         });
 
         await newOrder.save();
+        emitOrderEvent(req, 'order:placed', {
+            orderId: newOrder._id,
+            status: newOrder.status
+        });
         res.status(201).json({ message: "Order placed successfully" });
 
     } catch (error) {
@@ -151,6 +162,11 @@ router.put('/:id/status', async (req, res) => {
             return res.status(404).json({ error: "Order not found." });
         }
 
+        emitOrderEvent(req, 'order:updated', {
+            orderId: updatedOrder._id,
+            status: updatedOrder.status
+        });
+
         res.status(200).json({ message: "Order status updated successfully", order: updatedOrder });
     } catch (error) {
         console.error("Error updating order status:", error);
@@ -160,7 +176,10 @@ router.put('/:id/status', async (req, res) => {
 
 router.delete('/delete/:id', async (req, res) => {
     try {
-        await Order.findByIdAndDelete(req.params.id);
+        const deletedOrder = await Order.findByIdAndDelete(req.params.id);
+        if (deletedOrder) {
+            emitOrderEvent(req, 'order:deleted', { orderId: deletedOrder._id });
+        }
         res.status(200).json({ message: "Order removed from database" });
     } catch (error) {
         res.status(500).json({ error: "Delete failed" });
