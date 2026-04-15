@@ -158,17 +158,12 @@ router.put('/:id/status', async (req, res) => {
     }
 });
 
-// DELETE an order (Used for the 'Cancel' action)
 router.delete('/delete/:id', async (req, res) => {
     try {
-        const deletedOrder = await Order.findByIdAndDelete(req.params.id);
-        if (!deletedOrder) {
-            return res.status(404).json({ error: "Order not found." });
-        }
-        res.status(200).json({ message: "Order deleted successfully from database." });
+        await Order.findByIdAndDelete(req.params.id);
+        res.status(200).json({ message: "Order removed from database" });
     } catch (error) {
-        console.error("Delete Order Error:", error);
-        res.status(500).json({ error: "Internal Server Error" });
+        res.status(500).json({ error: "Delete failed" });
     }
 });
 
