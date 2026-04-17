@@ -25,28 +25,40 @@ router.post('/bulk-add', async (req, res) => {
         let extendedCount = 0;
 
         for (let data of facultyList) {
+            // Treat each academicYear as an independent category during Excel import.
             let existingFaculty = await Faculty.findOne({ 
                 mobile: data.mobile, 
-                departmentId: data.departmentId 
+                departmentId: data.departmentId,
+                academicYear: data.academicYear
             });
 
             if (existingFaculty) {
-                // FACULTY EXISTS: Extend their voucher validity
+                // FACULTY EXISTS IN THE SAME CATEGORY: overwrite from latest Excel.
                 let updated = false;
                 const newFrom = new Date(data.validFrom);
                 const newTill = new Date(data.validTill);
 
-                if (newFrom < new Date(existingFaculty.validFrom)) {
+                if (newFrom.getTime() !== new Date(existingFaculty.validFrom).getTime()) {
                     existingFaculty.validFrom = newFrom;
                     updated = true;
                 }
-                if (newTill > new Date(existingFaculty.validTill)) {
+                if (newTill.getTime() !== new Date(existingFaculty.validTill).getTime()) {
                     existingFaculty.validTill = newTill;
                     updated = true;
                 }
                 
                 if (existingFaculty.academicYear !== data.academicYear) {
                     existingFaculty.academicYear = data.academicYear;
+                    updated = true;
+                }
+
+                if (existingFaculty.fullName !== data.fullName) {
+                    existingFaculty.fullName = data.fullName;
+                    updated = true;
+                }
+
+                if (existingFaculty.email !== data.email) {
+                    existingFaculty.email = data.email;
                     updated = true;
                 }
 
