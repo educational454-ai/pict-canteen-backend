@@ -11,6 +11,7 @@ const menuRoutes = require('./routes/menuRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const guestRoutes = require('./routes/guestRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const mailRoutes = require('./routes/mailRoutes');
 
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +49,8 @@ app.use('/api/guests', guestRoutes);
 console.log("Loading Report Routes...");
 app.use('/api/reports', reportRoutes);
 app.use('/api/auth', require('./routes/authRoutes'));
+console.log("Loading Mail Routes...");
+app.use('/api/mail', mailRoutes);
 
 // --- DATABASE CONNECTION ---
 mongoose.connect(process.env.MONGO_URI)
