@@ -82,10 +82,10 @@ router.post('/send-bulk-mail', async (req, res) => {
       });
     }
 
-    if (!subject || !message) {
+    if (!subject) {
       return res.status(400).json({ 
         success: false, 
-        message: 'subject and message are required' 
+        message: 'subject is required' 
       });
     }
 
@@ -96,21 +96,30 @@ router.post('/send-bulk-mail', async (req, res) => {
     for (let i = 0; i < recipients.length; i += batchSize) {
       const batch = recipients.slice(i, i + batchSize);
 
-      const promises = batch.map(async (email) => {
+      const promises = batch.map(async (recipient) => {
         try {
+          const recipientEmail = typeof recipient === 'string' ? recipient : recipient.email;
+          const recipientMessage = typeof recipient === 'string'
+            ? message
+            : (recipient.message || message);
+
+          if (!recipientEmail || !recipientMessage) {
+            throw new Error('recipient email and message are required');
+          }
+
           const mailOptions = {
             from: process.env.BREVO_MAIL_FROM || process.env.BREVO_SMTP_USER,
-            to: email,
+            to: recipientEmail,
             subject,
-            text: message,
-            html: `<pre style="white-space: pre-wrap; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #111;">${escapeHtml(message)}</pre><p style="font-size: 12px; color: #666; margin-top: 20px;">Sent from PICT Canteen Management</p>`
+            text: recipientMessage,
+            html: `<pre style="white-space: pre-wrap; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #111;">${escapeHtml(recipientMessage)}</pre><p style="font-size: 12px; color: #666; margin-top: 20px;">Sent from PICT Canteen Management</p>`
           };
 
           await sendEmail(mailOptions);
           results.sent++;
         } catch (err) {
           results.failed++;
-          results.errors.push({ email, error: err.message });
+          results.errors.push({ recipient, error: err.message });
         }
       });
 
