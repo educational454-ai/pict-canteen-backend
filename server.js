@@ -12,6 +12,7 @@ const orderRoutes = require('./routes/orderRoutes');
 const guestRoutes = require('./routes/guestRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const mailRoutes = require('./routes/mailRoutes');
+const Order = require('./models/Order');
 
 const app = express();
 const server = http.createServer(app);
@@ -22,6 +23,45 @@ const io = new Server(server, {
     }
 });
 const PORT = process.env.PORT || 5000;
+
+const getMsUntilNextMidnight = () => {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setDate(now.getDate() + 1);
+    nextMidnight.setHours(0, 0, 0, 0);
+    return nextMidnight.getTime() - now.getTime();
+};
+
+const cleanupUnprocessedOrders = async () => {
+    try {
+        const staleOrders = await Order.find({ status: { $ne: 'Completed' } }, '_id').lean();
+        if (staleOrders.length === 0) {
+            console.log('🧹 Midnight cleanup: No unprocessed orders found.');
+            return;
+        }
+
+        const staleOrderIds = staleOrders.map((order) => order._id);
+        await Order.deleteMany({ _id: { $in: staleOrderIds } });
+
+        staleOrderIds.forEach((orderId) => {
+            io.emit('order:deleted', { orderId, autoCanceled: true });
+        });
+
+        console.log(`🧹 Midnight cleanup: Auto-canceled ${staleOrderIds.length} unprocessed order(s).`);
+    } catch (error) {
+        console.error('❌ Midnight cleanup failed:', error.message);
+    }
+};
+
+const scheduleMidnightCleanup = () => {
+    const delay = getMsUntilNextMidnight();
+    console.log(`⏰ Midnight cleanup scheduled in ${Math.ceil(delay / 1000)}s.`);
+
+    setTimeout(async () => {
+        await cleanupUnprocessedOrders();
+        scheduleMidnightCleanup();
+    }, delay);
+};
 
 app.set('io', io);
 
@@ -56,6 +96,7 @@ app.use('/api/mail', mailRoutes);
 mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         console.log("✅ MongoDB Connected Successfully!");
+        scheduleMidnightCleanup();
     })
     .catch((error) => {
         console.log("❌ Database connection failed:", error);
