@@ -102,7 +102,10 @@ router.post('/place', async (req, res) => {
 //Fetch orders for a specific department's report (Used by Coordinator)
 router.get('/department/:deptId', async (req, res) => {
     try {
-        const orders = await Order.find({ departmentId: req.params.deptId })
+        const orders = await Order.find({
+            departmentId: req.params.deptId,
+            status: 'Completed'
+        })
             // 🚀 THE FIX: Added 'academicYear' to the populated fields list
             .populate('facultyId', 'fullName voucherCode academicYear') 
             .sort({ orderDate: -1 }); 
