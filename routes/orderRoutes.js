@@ -189,33 +189,91 @@ router.delete('/delete/:id', async (req, res) => {
     }
 });
 
+// CANCEL ORDER (For Faculty/Guest user history)
+router.delete('/cancel/:id', async (req, res) => {
+    try {
+        const { voucherCode } = req.body;
+        if (!voucherCode) {
+            return res.status(400).json({ error: "Voucher code is required." });
+        }
+
+        const order = await Order.findById(req.params.id);
+        if (!order) {
+            return res.status(404).json({ error: "Order not found." });
+        }
+
+        if (order.status === 'Completed') {
+            return res.status(400).json({ error: "Completed orders cannot be canceled." });
+        }
+
+        const faculty = await Faculty.findOne({ voucherCode });
+        if (faculty) {
+            if (String(order.facultyId) !== String(faculty._id)) {
+                return res.status(403).json({ error: "You are not authorized to cancel this order." });
+            }
+        } else {
+            const guest = await Guest.findOne({ voucherCode });
+            if (!guest) {
+                return res.status(403).json({ error: "Invalid voucher for cancellation." });
+            }
+
+            if (order.voucherCode !== voucherCode) {
+                return res.status(403).json({ error: "You can cancel only your own guest orders." });
+            }
+        }
+
+        await Order.findByIdAndDelete(req.params.id);
+        emitOrderEvent(req, 'order:deleted', { orderId: order._id });
+        res.status(200).json({ message: "Order canceled successfully." });
+    } catch (error) {
+        res.status(500).json({ error: "Failed to cancel order." });
+    }
+});
+
 // 🚀 UPDATED: GET ALL PAST ORDERS (FACULTY + THEIR GUESTS)
 router.get('/history/:voucher', async (req, res) => {
     try {
-        // 1. Find the master faculty
-        const faculty = await Faculty.findOne({ voucherCode: req.params.voucher });
-        if (!faculty) return res.status(404).json({ error: "Faculty not found" });
+        const { voucher } = req.params;
+        const faculty = await Faculty.findOne({ voucherCode: voucher });
 
-        // 2. Fetch all orders where this faculty acted as the host (both for themselves and their guests)
-        const orders = await Order.find({ facultyId: faculty._id })
+        if (faculty) {
+            // Faculty can view their own + hosted guest orders.
+            const orders = await Order.find({ facultyId: faculty._id })
+                .sort({ createdAt: -1 })
+                .lean();
+
+            const guests = await Guest.find({ facultyId: faculty._id }, 'voucherCode guestName').lean();
+            const guestMap = {};
+            guests.forEach(g => {
+                guestMap[g.voucherCode] = g.guestName;
+            });
+
+            const enrichedOrders = orders.map(order => {
+                if (order.voucherCode && order.voucherCode.startsWith('G-')) {
+                    order.guestName = guestMap[order.voucherCode] || 'Unknown Guest';
+                }
+                return order;
+            });
+
+            return res.status(200).json(enrichedOrders);
+        }
+
+        const guest = await Guest.findOne({ voucherCode: voucher });
+        if (!guest) {
+            return res.status(404).json({ error: "Voucher not found" });
+        }
+
+        // Guest can view only orders placed with their own guest voucher.
+        const guestOrders = await Order.find({ voucherCode: voucher })
             .sort({ createdAt: -1 })
             .lean();
 
-        // 3. Match guest names so the faculty knows who they ordered for
-        const guests = await Guest.find({ facultyId: faculty._id }, 'voucherCode guestName').lean();
-        const guestMap = {};
-        guests.forEach(g => {
-            guestMap[g.voucherCode] = g.guestName;
-        });
+        const enrichedGuestOrders = guestOrders.map(order => ({
+            ...order,
+            guestName: guest.guestName
+        }));
 
-        const enrichedOrders = orders.map(order => {
-            if (order.voucherCode && order.voucherCode.startsWith('G-')) {
-                order.guestName = guestMap[order.voucherCode] || 'Unknown Guest';
-            }
-            return order;
-        });
-
-        res.status(200).json(enrichedOrders);
+        return res.status(200).json(enrichedGuestOrders);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Failed to fetch order history" });
