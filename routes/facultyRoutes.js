@@ -14,90 +14,55 @@ router.get('/all', async (req, res) => {
     }
 });
 
-// Bulk add from Excel
+// backend/routes/facultyRoutes.js - Bulk Add Optimized
 router.post('/bulk-add', async (req, res) => {
     try {
         const facultyList = req.body;
         if (!facultyList || facultyList.length === 0) return res.status(400).json({ error: "No data" });
 
         const dept = await Department.findById(facultyList[0].departmentId);
-        let newAdded = 0;
-        let extendedCount = 0;
+        
+        // Prepare bulk operations array
+        const bulkOps = facultyList.map(data => {
+            const randomID = Math.floor(1000 + Math.random() * 9000);
+            const voucherCode = `PICT-${dept.code || 'DEPT'}-${randomID}`;
 
-        for (let data of facultyList) {
-            // Treat each academicYear as an independent category during Excel import.
-            let existingFaculty = await Faculty.findOne({ 
-                mobile: data.mobile, 
-                departmentId: data.departmentId,
-                academicYear: data.academicYear
-            });
+            return {
+                updateOne: {
+                    filter: { 
+                        mobile: data.mobile, 
+                        departmentId: data.departmentId,
+                        academicYear: data.academicYear 
+                    },
+                    update: {
+                        $set: {
+                            fullName: data.fullName,
+                            email: data.email,
+                            validFrom: new Date(data.validFrom),
+                            validTill: new Date(data.validTill),
+                            assignedSubjects: data.assignedSubjects || [],
+                            isActive: true
+                        },
+                        $setOnInsert: { 
+                            voucherCode: voucherCode 
+                        }
+                    },
+                    upsert: true // Agar mobile match nahi hua toh insert karega
+                }
+            };
+        });
 
-            if (existingFaculty) {
-                // FACULTY EXISTS IN THE SAME CATEGORY: overwrite from latest Excel.
-                let updated = false;
-                const newFrom = new Date(data.validFrom);
-                const newTill = new Date(data.validTill);
-
-                if (newFrom.getTime() !== new Date(existingFaculty.validFrom).getTime()) {
-                    existingFaculty.validFrom = newFrom;
-                    updated = true;
-                }
-                if (newTill.getTime() !== new Date(existingFaculty.validTill).getTime()) {
-                    existingFaculty.validTill = newTill;
-                    updated = true;
-                }
-                
-                if (existingFaculty.academicYear !== data.academicYear) {
-                    existingFaculty.academicYear = data.academicYear;
-                    updated = true;
-                }
-
-                if (existingFaculty.fullName !== data.fullName) {
-                    existingFaculty.fullName = data.fullName;
-                    updated = true;
-                }
-
-                if (existingFaculty.email !== data.email) {
-                    existingFaculty.email = data.email;
-                    updated = true;
-                }
-
-                // 🚀 THE FIX: Completely overwrite with fresh, clean subjects from Excel
-                if (data.assignedSubjects) {
-                    existingFaculty.assignedSubjects = data.assignedSubjects;
-                    updated = true;
-                }
-
-                if (!existingFaculty.isActive) {
-                    existingFaculty.isActive = true;
-                    updated = true;
-                }
-
-                if (updated) {
-                    await existingFaculty.save();
-                    extendedCount++;
-                }
-            } else {
-                // FACULTY IS NEW
-                const randomID = Math.floor(1000 + Math.random() * 9000);
-                const newFaculty = new Faculty({
-                    ...data,
-                    assignedSubjects: data.assignedSubjects || [], 
-                    voucherCode: `PICT-${dept.code}-${randomID}`,
-                    isActive: true 
-                });
-                await newFaculty.save();
-                newAdded++;
-            }
-        }
+        // 🚀 Sabse important line: Ek single call database ko!
+        const result = await Faculty.bulkWrite(bulkOps);
 
         res.status(201).json({ 
             message: "Bulk processing complete", 
-            added: newAdded, 
-            extended: extendedCount 
+            added: result.upsertedCount, 
+            extended: result.modifiedCount 
         });
     } catch (error) {
-        res.status(400).json({ error: "Import failed", details: error.message });
+        console.error("Bulk Error:", error);
+        res.status(500).json({ error: "Import failed", details: error.message });
     }
 });
 
