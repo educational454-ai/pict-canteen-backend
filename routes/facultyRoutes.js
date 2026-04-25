@@ -23,74 +23,91 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        
+        // 🚀 Step 1: Excel ko raw arrays mein convert karo (No auto-headers)
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        if (rows.length < 2) return res.status(200).json({ success: false, message: "Excel file is empty." });
+
+        // 🚀 Step 2: Columns ki position dhoondo (Dynamic Header Mapping)
+        let colIdx = { pattern: -1, name: -1, mobile: -1, subject: -1, from: -1, to: -1 };
+        
+        // Pehli 5 rows check karo headers dhoondne ke liye
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
+            rows[i].forEach((cell, idx) => {
+                if (!cell) return;
+                const val = String(cell).toLowerCase().replace(/[^a-z]/gi, '');
+                if (val.includes("patternname")) colIdx.pattern = idx;
+                if (val.includes("internalexaminer")) colIdx.name = idx;
+                if (val.includes("mobileno")) colIdx.mobile = idx;
+                if (val.includes("subjectname")) colIdx.subject = idx;
+                if (val.includes("fromdate")) colIdx.from = idx;
+                if (val.includes("enddate")) colIdx.to = idx;
+            });
+            if (colIdx.pattern !== -1 && colIdx.mobile !== -1) break;
+        }
+
+        if (colIdx.pattern === -1 || colIdx.mobile === -1) {
+            return res.status(200).json({ success: false, message: "Could not find 'Pattern Name' or 'Mobile No.' columns." });
+        }
 
         const facultyMap = new Map();
-        const coordDept = (deptName || "").toUpperCase(); 
+        const coordDept = (deptName || "").toUpperCase();
 
-        rawData.forEach((row, index) => {
-            const getVal = (searchKey) => {
-                const normSearch = searchKey.replace(/[^a-z]/gi, '').toLowerCase();
-                const actualKey = Object.keys(row).find(k => k.replace(/[^a-z]/gi, '').toLowerCase().includes(normSearch));
-                return actualKey ? String(row[actualKey]).trim() : "";
-            };
-
-            const patternName = getVal('Pattern Name').toUpperCase();
-            if (!patternName) return;
+        // 🚀 Step 3: Data Filter & Process
+        rows.forEach((row, index) => {
+            const pattern = String(row[colIdx.pattern] || "").toUpperCase();
+            if (!pattern || pattern.includes("PATTERN NAME")) return; // Header row skip
 
             let isMyDeptRow = false;
 
-            // 🚀 ULTRA-FLEXIBLE KEYWORD MATCHING
-            // Computer Engineering (CE)
-            if (coordDept.includes("COMPUTER") && !coordDept.includes("ELECTRONICS")) {
-                if (patternName.includes("COMPUTER") && !patternName.includes("ELECTRONICS")) isMyDeptRow = true;
+            // PICT Branch Matching Logic
+            if (coordDept.includes("COMPUTER ENGINEERING") && !coordDept.includes("ELECTRONICS")) {
+                if (pattern.includes("(COMPUTER)") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
             } 
-            // Information Technology (IT)
             else if (coordDept.includes("INFORMATION")) {
-                if (patternName.includes("INFORMATION")) isMyDeptRow = true;
+                if (pattern.includes("INFORMATION")) isMyDeptRow = true;
             }
-            // ENTC
             else if (coordDept.includes("TELECOMMUNICATION") || coordDept.includes("TELECOM")) {
-                if (patternName.includes("ELECTRONICS") && (patternName.includes("TELECOM") || patternName.includes("TELECOMMUNICATION"))) isMyDeptRow = true;
+                if (pattern.includes("ELECTRONICS & TELECOM")) isMyDeptRow = true;
             }
-            // ECE (Electronics & Computer)
-            else if (coordDept.includes("ELECTRONICS") && coordDept.includes("COMPUTER")) {
-                if (patternName.includes("ELECTRONICS") && patternName.includes("COMPUTER")) isMyDeptRow = true;
+            else if (coordDept.includes("ELECTRONICS & COMPUTER")) {
+                if (pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDeptRow = true;
             }
-            // AIDS
-            else if (coordDept.includes("ARTIFICIAL") || coordDept.includes("INTELLIGANCE")) {
-                if (patternName.includes("ARTIFICIAL") || patternName.includes("INTELLIGENCE") || patternName.includes("DATA SCIENCE") || patternName.includes("AIDS")) isMyDeptRow = true;
+            else if (coordDept.includes("ARTIFICIAL")) {
+                if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE") || pattern.includes("AIDS")) isMyDeptRow = true;
             }
 
             if (!isMyDeptRow) return;
 
-            const mobile = getVal('Mobile No');
-            const rawName = getVal('Internal Examiner');
+            const mobile = String(row[colIdx.mobile] || "").trim();
+            const rawName = String(row[colIdx.name] || "").trim();
             if (!mobile || mobile.length < 5 || !rawName) return;
 
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
-            let yearScope = patternName.includes("T.E.") ? "3rd Yr (Regular)" : patternName.includes("B.E.") ? "4th Yr (Regular)" : "2nd Yr (Regular)";
+            const yearScope = pattern.includes("T.E.") ? "3rd Yr (Regular)" : pattern.includes("B.E.") ? "4th Yr (Regular)" : "2nd Yr (Regular)";
 
-            const fromDateStr = getVal('From Date') ? new Date(getVal('From Date')).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const endDateStr = getVal('End Date') ? new Date(getVal('End Date')).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const subjectEntry = `${fromDateStr}|${endDateStr}|${getVal('Subject Name')}`;
+            // Dates handling
+            const fDate = row[colIdx.from] instanceof Date ? row[colIdx.from] : new Date();
+            const tDate = row[colIdx.to] instanceof Date ? row[colIdx.to] : new Date();
+            const subject = String(row[colIdx.subject] || "Exam Duty");
+            const subjectEntry = `${fDate.toISOString().split('T')[0]}|${tDate.toISOString().split('T')[0]}|${subject}`;
 
             if (facultyMap.has(mobile)) {
-                facultyMap.get(mobile).assignedSubjects.push(subjectEntry);
+                const existing = facultyMap.get(mobile);
+                if (!existing.assignedSubjects.includes(subjectEntry)) existing.assignedSubjects.push(subjectEntry);
             } else {
                 facultyMap.set(mobile, {
-                    fullName: cleanedName, mobile, departmentId, email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
-                    academicYear: yearScope, validFrom: new Date(fromDateStr), validTill: new Date(endDateStr),
+                    fullName: cleanedName, mobile, departmentId, 
+                    email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
+                    academicYear: yearScope, validFrom: fDate, validTill: tDate,
                     assignedSubjects: [subjectEntry], isActive: true
                 });
             }
         });
 
         const finalData = Array.from(facultyMap.values());
-        if (finalData.length === 0) {
-            // 🚨 Isse humein pata chalega ki backend ko kya mil raha hai
-            return res.status(200).json({ success: false, message: `Filtered 0 rows. Dept: ${coordDept}` });
-        }
+        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched ${coordDept} department.` });
 
         const bulkOps = finalData.map(data => ({
             updateOne: {
@@ -104,7 +121,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
 
     } catch (error) {
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error(error);
+        res.status(500).json({ success: false, message: "Critical Server Error" });
     }
 });
 
