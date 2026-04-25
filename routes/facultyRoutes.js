@@ -5,7 +5,7 @@ const Department = require('../models/Department');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const upload = multer({ storage: multer.memoryStorage() }); // File memory mein rakhega
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Get all faculty for the dashboard
 router.get('/all', async (req, res) => {
@@ -17,41 +17,56 @@ router.get('/all', async (req, res) => {
     }
 });
 
-// 🚀 NEW ROUTE: Backend Excel Parsing & Filtering
 router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
     try {
         const { departmentId, deptName } = req.body; 
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-        // 1. Read Excel from Buffer
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rawData = XLSX.utils.sheet_to_json(sheet);
+        const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
 
         const facultyMap = new Map();
-        // Dept filtering: e.g., "COMPUTER" from "COMPUTER ENGINEERING"
-        const searchKeyword = deptName.split(' ')[0].toUpperCase(); 
+        const coordinatorDept = deptName.toUpperCase(); // e.g., "COMPUTER ENGINEERING"
 
-        // 2. Process and Filter
-        rawData.forEach(row => {
+        rawData.forEach((row, index) => {
             const getVal = (k) => {
                 const key = Object.keys(row).find(rk => rk.trim().toLowerCase() === k.toLowerCase());
                 return key ? String(row[key]) : "";
             };
 
             const patternName = getVal('Pattern Name').toUpperCase();
-            if (!patternName.includes(searchKeyword)) return; // Skip other depts
+            
+            // 🚀 SMART FILTERING LOGIC: Har department ke liye
+            let isMyDeptRow = false;
+            
+            if (coordinatorDept.includes("COMPUTER") && patternName.includes("COMPUTER")) {
+                isMyDeptRow = true;
+            } else if (coordinatorDept.includes("INFORMATION") && patternName.includes("INFORMATION")) {
+                isMyDeptRow = true;
+            } else if (coordinatorDept.includes("ELECTRONICS") && patternName.includes("ELECTRONICS")) {
+                isMyDeptRow = true;
+            } else if (coordinatorDept.includes("ARTIFICIAL") && (patternName.includes("ARTIFICIAL") || patternName.includes("DS"))) {
+                isMyDeptRow = true;
+            }
+
+            // Agar ye coordinator ke department ki row nahi hai, toh skip karo
+            if (!isMyDeptRow) return;
 
             const mobile = getVal('Mobile No.').trim();
             const rawName = getVal('Internal Examiner').trim();
-            if (!mobile || !rawName) return;
+            if (!mobile || !rawName || mobile === "undefined") return;
 
+            // Name format fix: (ID)-Name -> Name
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             
-            // Year determination
+            // Year determination (S.E. -> 2nd, T.E. -> 3rd, B.E. -> 4th)
             let yearScope = "2nd Yr (Regular)";
             if (patternName.includes("T.E.")) yearScope = "3rd Yr (Regular)";
-            if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
+            else if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
+
+            // Dates conversion
+            const validFrom = getVal('From Date') ? new Date(getVal('From Date')) : new Date();
+            const validTill = getVal('End Date') ? new Date(getVal('End Date')) : new Date(new Date().setDate(new Date().getDate() + 7));
 
             facultyMap.set(mobile, {
                 fullName: cleanedName,
@@ -59,17 +74,20 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
                 departmentId,
                 email: `${cleanedName.replace(/\s+/g, '.').toLowerCase()}@pict.edu`,
                 academicYear: yearScope,
-                validFrom: new Date(getVal('From Date')),
-                validTill: new Date(getVal('End Date')),
+                validFrom,
+                validTill,
                 assignedSubjects: [getVal('Subject Name')],
                 isActive: true
             });
         });
 
-        const finalData = Array.from(facultyMap.values());
+        const finalDataArray = Array.from(facultyMap.values());
         
-        // 3. Bulk DB Update
-        const bulkOps = finalData.map(data => {
+        if (finalDataArray.length === 0) {
+            return res.status(200).json({ success: true, added: 0, updated: 0, message: "No matching rows for your department." });
+        }
+
+        const bulkOps = finalDataArray.map(data => {
             const randomID = Math.floor(1000 + Math.random() * 9000);
             return {
                 updateOne: {
@@ -92,8 +110,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Backend Error:", error);
-        res.status(500).json({ error: "Server processing failed" });
+        console.error("Bulk Processing Error:", error);
+        res.status(500).json({ error: "Server failed to process Excel" });
     }
 });
 
