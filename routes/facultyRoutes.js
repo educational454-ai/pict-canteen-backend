@@ -20,24 +20,23 @@ router.get('/all', async (req, res) => {
 router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
     try {
         const { departmentId, deptName } = req.body; 
-        if (!req.file) return res.status(400).json({ error: "No file received by server" });
+        if (!req.file) return res.status(400).json({ error: "File not received" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
         
-        // 🚀 Sabse zyada data wali sheet uthao
+        // 🚀 Step 1: Har sheet check karo (Kahin data hidden sheet mein toh nahi?)
         let rows = [];
-        let sheetFound = "";
         workbook.SheetNames.forEach(name => {
             const data = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
-            if (data.length > rows.length) { rows = data; sheetFound = name; }
+            if (data.length > rows.length) rows = data;
         });
 
-        if (rows.length < 2) return res.status(200).json({ success: false, message: "Sheet is empty or unreadable." });
+        if (rows.length < 2) return res.status(200).json({ success: false, message: "Excel is empty!" });
 
-        // 🚀 DYNAMIC HEADER SEARCH (Ab dot, space, case ka koi locha nahi)
+        // 🚀 Step 2: Columns dhoondo (Ab hum 50 rows scan karenge, safe side)
         let colIdx = { pattern: -1, name: -1, mobile: -1, subject: -1, from: -1, to: -1 };
         
-        for (let i = 0; i < Math.min(15, rows.length); i++) {
+        for (let i = 0; i < Math.min(50, rows.length); i++) {
             rows[i].forEach((cell, idx) => {
                 if (!cell) return;
                 const s = String(cell).toLowerCase().replace(/[^a-z]/g, "");
@@ -52,53 +51,62 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         }
 
         if (colIdx.pattern === -1 || colIdx.mobile === -1) {
-            return res.status(200).json({ success: false, message: `Headers not found. Scan info: Pattern:${colIdx.pattern}, Mobile:${colIdx.mobile}` });
+            return res.status(200).json({ success: false, message: "Error: Could not find 'Pattern Name' column. Check Excel headers." });
         }
 
         const facultyMap = new Map();
         const coordDept = (deptName || "").toUpperCase();
 
-        rows.forEach((row, idx) => {
+        // 🚀 Step 3: Branch Logic (Simplified & Nuclear)
+        rows.forEach((row) => {
             const pattern = String(row[colIdx.pattern] || "").toUpperCase();
-            // Header row ya empty row skip karo
-            if (!pattern || pattern.includes("PATTERN NAME") || pattern.length < 5) return;
+            if (!pattern || pattern.includes("PATTERN NAME") || pattern.length < 10) return;
 
             let isMyDeptRow = false;
 
-            // 🚀 PICT BRANCH ISOLATION LOGIC
-            if (coordDept.includes("COMPUTER ENGINEERING") && !coordDept.includes("ELECTRONICS")) {
-                if (pattern.includes("(COMPUTER)") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
+            // 1. Computer Engineering (CE)
+            if (coordDept === "COMPUTER ENGINEERING") {
+                // Must have COMPUTER, but NOT ELECTRONICS (Strict CE)
+                if (pattern.includes("COMPUTER") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
             } 
-            else if (coordDept.includes("INFORMATION")) {
+            // 2. Information Technology (IT)
+            else if (coordDept === "INFORMATION TECHNOLOGY") {
                 if (pattern.includes("INFORMATION")) isMyDeptRow = true;
             }
-            else if (coordDept.includes("TELECOMMUNICATION") || coordDept.includes("TELECOM")) {
-                if (pattern.includes("ELECTRONICS") && (pattern.includes("TELECOM") || pattern.includes("TELECOMM"))) isMyDeptRow = true;
+            // 3. ENTC
+            else if (coordDept.includes("TELECOMMUNICATION")) {
+                if (pattern.includes("ELECTRONICS") && (pattern.includes("TELECOM") || pattern.includes("TELECOMMUNICATION"))) isMyDeptRow = true;
             }
-            else if (coordDept.includes("ELECTRONICS & COMPUTER") || coordDept.includes("ELECTRONICS AND COMPUTER")) {
+            // 4. Electronics & Computer (ECE)
+            else if (coordDept === "ELECTRONICS & COMPUTER") {
                 if (pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDeptRow = true;
             }
+            // 5. AI & DS
             else if (coordDept.includes("ARTIFICIAL")) {
-                if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE") || pattern.includes("AIDS")) isMyDeptRow = true;
+                if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE")) isMyDeptRow = true;
             }
 
             if (!isMyDeptRow) return;
 
-            const mobile = String(row[colIdx.mobile] || "").trim();
+            // Extract values
+            const mobile = String(row[colIdx.mobile] || "").trim().replace(/[^0-9]/g, "");
             const rawName = String(row[colIdx.name] || "").trim();
-            if (!mobile || mobile.length < 8 || !rawName) return;
+            
+            if (mobile.length < 10 || !rawName || rawName === "undefined") return;
 
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             const year = pattern.includes("T.E.") ? "3rd Yr" : pattern.includes("B.E.") ? "4th Yr" : "2nd Yr";
             
-            // Date formatting
+            // Date Logic
             const d1 = row[colIdx.from] instanceof Date ? row[colIdx.from].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
             const d2 = row[colIdx.to] instanceof Date ? row[colIdx.to].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
             const sub = String(row[colIdx.subject] || "Exam Duty");
             const subKey = `${d1}|${d2}|${sub}`;
 
             if (facultyMap.has(mobile)) {
-                if (!facultyMap.get(mobile).assignedSubjects.includes(subKey)) facultyMap.get(mobile).assignedSubjects.push(subKey);
+                if (!facultyMap.get(mobile).assignedSubjects.includes(subKey)) {
+                    facultyMap.get(mobile).assignedSubjects.push(subKey);
+                }
             } else {
                 facultyMap.set(mobile, {
                     fullName: cleanedName, mobile, departmentId,
@@ -110,12 +118,21 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
         const finalData = Array.from(facultyMap.values());
-        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched ${coordDept} in ${rows.length} rows.` });
+        
+        if (finalData.length === 0) {
+            return res.status(200).json({ 
+                success: false, 
+                message: `Matched 0 rows for ${coordDept}. Tip: Check if the Branch name in Excel matches your department.` 
+            });
+        }
 
         const bulkOps = finalData.map(d => ({
             updateOne: {
                 filter: { mobile: d.mobile, departmentId: d.departmentId },
-                update: { $set: d, $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } },
+                update: { 
+                    $set: d, 
+                    $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } 
+                },
                 upsert: true
             }
         }));
@@ -125,7 +142,7 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: "Server Error: " + err.message });
+        res.status(500).json({ success: false, message: "Critical Error: " + err.message });
     }
 });
 
