@@ -20,77 +20,64 @@ router.get('/all', async (req, res) => {
 router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
     try {
         const { departmentId, deptName } = req.body; 
-        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file) return res.status(400).json({ error: "No file received by server" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
         
-        // 🚀 Step 1: Saari Sheets scan karo aur sabse zyada data wali sheet uthao
+        // 🚀 Sabse zyada data wali sheet uthao
         let rows = [];
-        workbook.SheetNames.forEach(sheetName => {
-            const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
-            if (sheetData.length > rows.length) rows = sheetData;
+        let sheetFound = "";
+        workbook.SheetNames.forEach(name => {
+            const data = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+            if (data.length > rows.length) { rows = data; sheetFound = name; }
         });
 
-        // Agar bilkul data nahi mila
-        if (rows.length < 2) {
-            return res.status(200).json({ success: false, message: "Could not read any data from Excel sheets." });
-        }
+        if (rows.length < 2) return res.status(200).json({ success: false, message: "Sheet is empty or unreadable." });
 
-        // 🚀 Step 2: Columns ki position dhoondo (Dynamic Mapping)
+        // 🚀 DYNAMIC HEADER SEARCH (Ab dot, space, case ka koi locha nahi)
         let colIdx = { pattern: -1, name: -1, mobile: -1, subject: -1, from: -1, to: -1 };
         
-        // Pehli 10 rows mein headers search karo (Safe side)
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
+        for (let i = 0; i < Math.min(15, rows.length); i++) {
             rows[i].forEach((cell, idx) => {
                 if (!cell) return;
-                const val = String(cell).toLowerCase().trim().replace(/\s/g, "");
-                if (val.includes("patternname")) colIdx.pattern = idx;
-                if (val.includes("internalexaminer")) colIdx.name = idx;
-                if (val.includes("mobileno")) colIdx.mobile = idx;
-                if (val.includes("subjectname")) colIdx.subject = idx;
-                if (val.includes("fromdate")) colIdx.from = idx;
-                if (val.includes("enddate")) colIdx.to = idx;
+                const s = String(cell).toLowerCase().replace(/[^a-z]/g, "");
+                if (s.includes("pattern")) colIdx.pattern = idx;
+                if (s.includes("examiner")) colIdx.name = idx;
+                if (s.includes("mobile")) colIdx.mobile = idx;
+                if (s.includes("subjectname")) colIdx.subject = idx;
+                if (s.includes("fromdate")) colIdx.from = idx;
+                if (s.includes("enddate") || s.includes("tilldate")) colIdx.to = idx;
             });
             if (colIdx.pattern !== -1 && colIdx.mobile !== -1) break;
         }
 
-        // Debugging for you: Agar koi column nahi mila
         if (colIdx.pattern === -1 || colIdx.mobile === -1) {
-            return res.status(200).json({ 
-                success: false, 
-                message: `Headers missing! Pattern: ${colIdx.pattern !== -1 ? 'OK' : 'NOT FOUND'}, Mobile: ${colIdx.mobile !== -1 ? 'OK' : 'NOT FOUND'}` 
-            });
+            return res.status(200).json({ success: false, message: `Headers not found. Scan info: Pattern:${colIdx.pattern}, Mobile:${colIdx.mobile}` });
         }
 
         const facultyMap = new Map();
         const coordDept = (deptName || "").toUpperCase();
 
-        // 🚀 Step 3: Data Process & Strict Filtering
-        rows.forEach((row) => {
+        rows.forEach((row, idx) => {
             const pattern = String(row[colIdx.pattern] || "").toUpperCase();
-            if (!pattern || pattern.includes("PATTERN NAME")) return; // Skip headers
+            // Header row ya empty row skip karo
+            if (!pattern || pattern.includes("PATTERN NAME") || pattern.length < 5) return;
 
             let isMyDeptRow = false;
 
-            // PICT BRANCH SMART ISOLATION
-            // 1. COMPUTER ENGINEERING (CE)
+            // 🚀 PICT BRANCH ISOLATION LOGIC
             if (coordDept.includes("COMPUTER ENGINEERING") && !coordDept.includes("ELECTRONICS")) {
-                // Must have COMPUTER but NOT ELECTRONICS
                 if (pattern.includes("(COMPUTER)") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
             } 
-            // 2. INFORMATION TECHNOLOGY (IT)
             else if (coordDept.includes("INFORMATION")) {
                 if (pattern.includes("INFORMATION")) isMyDeptRow = true;
             }
-            // 3. ENTC
-            else if (coordDept.includes("TELECOMMUNICATION")) {
-                if (pattern.includes("ELECTRONICS & TELECOM")) isMyDeptRow = true;
+            else if (coordDept.includes("TELECOMMUNICATION") || coordDept.includes("TELECOM")) {
+                if (pattern.includes("ELECTRONICS") && (pattern.includes("TELECOM") || pattern.includes("TELECOMM"))) isMyDeptRow = true;
             }
-            // 4. ELECTRONICS & COMPUTER (ECE)
-            else if (coordDept.includes("ELECTRONICS & COMPUTER")) {
+            else if (coordDept.includes("ELECTRONICS & COMPUTER") || coordDept.includes("ELECTRONICS AND COMPUTER")) {
                 if (pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDeptRow = true;
             }
-            // 5. AIDS
             else if (coordDept.includes("ARTIFICIAL")) {
                 if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE") || pattern.includes("AIDS")) isMyDeptRow = true;
             }
@@ -99,40 +86,36 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
 
             const mobile = String(row[colIdx.mobile] || "").trim();
             const rawName = String(row[colIdx.name] || "").trim();
-            if (!mobile || mobile.length < 5 || !rawName) return;
+            if (!mobile || mobile.length < 8 || !rawName) return;
 
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
-            const yearScope = pattern.includes("T.E.") ? "3rd Yr (Regular)" : pattern.includes("B.E.") ? "4th Yr (Regular)" : "2nd Yr (Regular)";
-
-            // Handle Dates
-            const fDate = row[colIdx.from] instanceof Date ? row[colIdx.from] : new Date();
-            const tDate = row[colIdx.to] instanceof Date ? row[colIdx.to] : new Date();
-            const subject = String(row[colIdx.subject] || "Exam Duty");
-            const subjectEntry = `${fDate.toISOString().split('T')[0]}|${tDate.toISOString().split('T')[0]}|${subject}`;
+            const year = pattern.includes("T.E.") ? "3rd Yr" : pattern.includes("B.E.") ? "4th Yr" : "2nd Yr";
+            
+            // Date formatting
+            const d1 = row[colIdx.from] instanceof Date ? row[colIdx.from].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+            const d2 = row[colIdx.to] instanceof Date ? row[colIdx.to].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+            const sub = String(row[colIdx.subject] || "Exam Duty");
+            const subKey = `${d1}|${d2}|${sub}`;
 
             if (facultyMap.has(mobile)) {
-                const existing = facultyMap.get(mobile);
-                if (!existing.assignedSubjects.includes(subjectEntry)) existing.assignedSubjects.push(subjectEntry);
+                if (!facultyMap.get(mobile).assignedSubjects.includes(subKey)) facultyMap.get(mobile).assignedSubjects.push(subKey);
             } else {
                 facultyMap.set(mobile, {
-                    fullName: cleanedName, mobile, departmentId, 
+                    fullName: cleanedName, mobile, departmentId,
                     email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
-                    academicYear: yearScope, validFrom: fDate, validTill: tDate,
-                    assignedSubjects: [subjectEntry], isActive: true
+                    academicYear: `${year} (Regular)`, validFrom: new Date(d1), validTill: new Date(d2),
+                    assignedSubjects: [subKey], isActive: true
                 });
             }
         });
 
         const finalData = Array.from(facultyMap.values());
-        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched for ${coordDept}. Check branch names in Excel.` });
+        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched ${coordDept} in ${rows.length} rows.` });
 
-        const bulkOps = finalData.map(data => ({
+        const bulkOps = finalData.map(d => ({
             updateOne: {
-                filter: { mobile: data.mobile, departmentId: data.departmentId },
-                update: { 
-                    $set: data, 
-                    $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2).toUpperCase()}-${Math.floor(1000+Math.random()*9000)}` } 
-                },
+                filter: { mobile: d.mobile, departmentId: d.departmentId },
+                update: { $set: d, $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } },
                 upsert: true
             }
         }));
@@ -140,9 +123,9 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         const result = await Faculty.bulkWrite(bulkOps);
         res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
 
-    } catch (error) {
-        console.error("PICT Master Crash:", error);
-        res.status(500).json({ success: false, message: "Critical Server Error: " + error.message });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server Error: " + err.message });
     }
 });
 
