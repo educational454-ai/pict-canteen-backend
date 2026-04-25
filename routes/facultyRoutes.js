@@ -23,50 +23,66 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        // raw: false ensures we get headers as they are
+        const rawData = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
         const facultyMap = new Map();
-        const coordinatorDept = deptName.toUpperCase(); // e.g., "COMPUTER ENGINEERING"
+        const coordinatorDept = deptName.toUpperCase();
 
         rawData.forEach((row, index) => {
-            const getVal = (k) => {
-                const key = Object.keys(row).find(rk => rk.trim().toLowerCase() === k.toLowerCase());
-                return key ? String(row[key]) : "";
+            // Flexible Header Finder
+            const getVal = (searchKey) => {
+                const actualKey = Object.keys(row).find(k => 
+                    k.replace(/[^a-zA-Z]/g, "").toLowerCase() === searchKey.replace(/[^a-zA-Z]/g, "").toLowerCase()
+                );
+                return actualKey ? String(row[actualKey]).trim() : "";
             };
 
             const patternName = getVal('Pattern Name').toUpperCase();
-            
-            // 🚀 SMART FILTERING LOGIC: Har department ke liye
+            if (!patternName) return; // Skip empty rows
+
+            // 🚀 PICT BRANCH ISOLATION LOGIC
             let isMyDeptRow = false;
-            
-            if (coordinatorDept.includes("COMPUTER") && patternName.includes("COMPUTER")) {
-                isMyDeptRow = true;
-            } else if (coordinatorDept.includes("INFORMATION") && patternName.includes("INFORMATION")) {
-                isMyDeptRow = true;
-            } else if (coordinatorDept.includes("ELECTRONICS") && patternName.includes("ELECTRONICS")) {
-                isMyDeptRow = true;
-            } else if (coordinatorDept.includes("ARTIFICIAL") && (patternName.includes("ARTIFICIAL") || patternName.includes("DS"))) {
-                isMyDeptRow = true;
+
+            // 1. Computer Engineering (CE)
+            if (coordinatorDept.includes("COMPUTER ENGINEERING")) {
+                // Should match "(COMPUTER)" but NOT "(ELECTRONICS AND COMPUTER)"
+                if (patternName.includes("(COMPUTER)") && !patternName.includes("ELECTRONICS AND COMPUTER")) {
+                    isMyDeptRow = true;
+                }
+            } 
+            // 2. Information Technology (IT)
+            else if (coordinatorDept.includes("INFORMATION")) {
+                if (patternName.includes("INFORMATION")) isMyDeptRow = true;
+            }
+            // 3. ENTC
+            else if (coordinatorDept.includes("TELECOMMUNICATION")) {
+                if (patternName.includes("ELECTRONICS & TELECOM")) isMyDeptRow = true;
+            }
+            // 4. AI & DS
+            else if (coordinatorDept.includes("ARTIFICIAL")) {
+                if (patternName.includes("ARTIFICIAL") || patternName.includes("DATA SCIENCE")) isMyDeptRow = true;
+            }
+            // 5. Electronics and Computer (The new branch)
+            else if (coordinatorDept.includes("ELECTRONICS AND COMPUTER")) {
+                if (patternName.includes("ELECTRONICS AND COMPUTER")) isMyDeptRow = true;
             }
 
-            // Agar ye coordinator ke department ki row nahi hai, toh skip karo
             if (!isMyDeptRow) return;
 
-            const mobile = getVal('Mobile No.').trim();
-            const rawName = getVal('Internal Examiner').trim();
-            if (!mobile || !rawName || mobile === "undefined") return;
+            const mobile = getVal('Mobile No');
+            const rawName = getVal('Internal Examiner');
 
-            // Name format fix: (ID)-Name -> Name
+            // Skip if crucial data is missing
+            if (!mobile || mobile === "" || !rawName) return;
+
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             
-            // Year determination (S.E. -> 2nd, T.E. -> 3rd, B.E. -> 4th)
+            // Year Mapping
             let yearScope = "2nd Yr (Regular)";
             if (patternName.includes("T.E.")) yearScope = "3rd Yr (Regular)";
             else if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
-
-            // Dates conversion
-            const validFrom = getVal('From Date') ? new Date(getVal('From Date')) : new Date();
-            const validTill = getVal('End Date') ? new Date(getVal('End Date')) : new Date(new Date().setDate(new Date().getDate() + 7));
 
             facultyMap.set(mobile, {
                 fullName: cleanedName,
@@ -74,8 +90,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
                 departmentId,
                 email: `${cleanedName.replace(/\s+/g, '.').toLowerCase()}@pict.edu`,
                 academicYear: yearScope,
-                validFrom,
-                validTill,
+                validFrom: getVal('From Date') ? new Date(getVal('From Date')) : new Date(),
+                validTill: getVal('End Date') ? new Date(getVal('End Date')) : new Date(new Date().setDate(new Date().getDate() + 7)),
                 assignedSubjects: [getVal('Subject Name')],
                 isActive: true
             });
@@ -84,7 +100,7 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         const finalDataArray = Array.from(facultyMap.values());
         
         if (finalDataArray.length === 0) {
-            return res.status(200).json({ success: true, added: 0, updated: 0, message: "No matching rows for your department." });
+            return res.status(200).json({ success: true, added: 0, updated: 0, message: "No rows matched your department." });
         }
 
         const bulkOps = finalDataArray.map(data => {
@@ -110,8 +126,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Bulk Processing Error:", error);
-        res.status(500).json({ error: "Server failed to process Excel" });
+        console.error("Critical Bulk Error:", error);
+        res.status(500).json({ error: "Excel processing failed on server" });
     }
 });
 
