@@ -24,49 +24,49 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // raw: false ensures we get headers as they are
         const rawData = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
         const facultyMap = new Map();
         const coordinatorDept = deptName.toUpperCase();
 
-        rawData.forEach((row, index) => {
-            // Flexible Header Finder
+        rawData.forEach((row) => {
+            // Robust Header Matching
             const getVal = (searchKey) => {
                 const actualKey = Object.keys(row).find(k => 
-                    k.replace(/[^a-zA-Z]/g, "").toLowerCase() === searchKey.replace(/[^a-zA-Z]/g, "").toLowerCase()
+                    k.trim().replace(/[^a-zA-Z]/g, "").toLowerCase() === searchKey.replace(/[^a-zA-Z]/g, "").toLowerCase()
                 );
                 return actualKey ? String(row[actualKey]).trim() : "";
             };
 
             const patternName = getVal('Pattern Name').toUpperCase();
-            if (!patternName) return; // Skip empty rows
+            if (!patternName) return;
 
-            // 🚀 PICT BRANCH ISOLATION LOGIC
+            // 🚀 PICT BRANCH ISOLATION (Safe for Mixed Excels)
             let isMyDeptRow = false;
 
-            // 1. Computer Engineering (CE)
-            if (coordinatorDept.includes("COMPUTER ENGINEERING")) {
-                // Should match "(COMPUTER)" but NOT "(ELECTRONICS AND COMPUTER)"
-                if (patternName.includes("(COMPUTER)") && !patternName.includes("ELECTRONICS AND COMPUTER")) {
+            // 1. COMPUTER ENGINEERING (CE)
+            if (coordinatorDept.includes("COMPUTER ENGINEERING") && !coordinatorDept.includes("ELECTRONICS")) {
+                if (patternName.includes("(COMPUTER)") && !patternName.includes("ELECTRONICS")) {
                     isMyDeptRow = true;
                 }
             } 
-            // 2. Information Technology (IT)
+            // 2. INFORMATION TECHNOLOGY (IT)
             else if (coordinatorDept.includes("INFORMATION")) {
                 if (patternName.includes("INFORMATION")) isMyDeptRow = true;
             }
             // 3. ENTC
-            else if (coordinatorDept.includes("TELECOMMUNICATION")) {
-                if (patternName.includes("ELECTRONICS & TELECOM")) isMyDeptRow = true;
+            else if (coordinatorDept.includes("TELECOMMUNICATION") || coordinatorDept.includes("TELECOM")) {
+                if (patternName.includes("ELECTRONICS & TELECOM") || patternName.includes("ELECTRONICS & TELECOMM")) {
+                    isMyDeptRow = true;
+                }
             }
-            // 4. AI & DS
-            else if (coordinatorDept.includes("ARTIFICIAL")) {
-                if (patternName.includes("ARTIFICIAL") || patternName.includes("DATA SCIENCE")) isMyDeptRow = true;
-            }
-            // 5. Electronics and Computer (The new branch)
+            // 4. ELECTRONICS AND COMPUTER (The New Branch)
             else if (coordinatorDept.includes("ELECTRONICS AND COMPUTER")) {
                 if (patternName.includes("ELECTRONICS AND COMPUTER")) isMyDeptRow = true;
+            }
+            // 5. AI & DS
+            else if (coordinatorDept.includes("ARTIFICIAL")) {
+                if (patternName.includes("ARTIFICIAL") || patternName.includes("DATA SCIENCE")) isMyDeptRow = true;
             }
 
             if (!isMyDeptRow) return;
@@ -74,12 +74,12 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
             const mobile = getVal('Mobile No');
             const rawName = getVal('Internal Examiner');
 
-            // Skip if crucial data is missing
-            if (!mobile || mobile === "" || !rawName) return;
+            // Agar Mobile ya Name missing hai toh skip
+            if (!mobile || mobile.length < 5 || !rawName || rawName === "undefined") return;
 
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             
-            // Year Mapping
+            // Year Mapping based on PICT format
             let yearScope = "2nd Yr (Regular)";
             if (patternName.includes("T.E.")) yearScope = "3rd Yr (Regular)";
             else if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
@@ -99,6 +99,7 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
 
         const finalDataArray = Array.from(facultyMap.values());
         
+        // Agar yahan 0 hai toh filtering fail hui hai
         if (finalDataArray.length === 0) {
             return res.status(200).json({ success: true, added: 0, updated: 0, message: "No rows matched your department." });
         }
@@ -126,8 +127,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Critical Bulk Error:", error);
-        res.status(500).json({ error: "Excel processing failed on server" });
+        console.error("PICT Bulk Upload Error:", error);
+        res.status(500).json({ error: "Server failed to process Excel" });
     }
 });
 
