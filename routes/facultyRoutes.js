@@ -23,131 +23,88 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rawData = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+        const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
 
         const facultyMap = new Map();
-        const coordinatorDept = deptName.trim(); // Exact DB name: "Computer Engineering", etc.
+        const coordDept = (deptName || "").toUpperCase(); 
 
-        rawData.forEach((row) => {
-            // Helper to handle messy Excel headers (dots/spaces)
+        rawData.forEach((row, index) => {
             const getVal = (searchKey) => {
-                const normalizedSearch = searchKey.replace(/[^a-z]/gi, '').toLowerCase();
-                const actualKey = Object.keys(row).find(k => 
-                    k.replace(/[^a-z]/gi, '').toLowerCase() === normalizedSearch
-                );
+                const normSearch = searchKey.replace(/[^a-z]/gi, '').toLowerCase();
+                const actualKey = Object.keys(row).find(k => k.replace(/[^a-z]/gi, '').toLowerCase().includes(normSearch));
                 return actualKey ? String(row[actualKey]).trim() : "";
             };
 
             const patternName = getVal('Pattern Name').toUpperCase();
             if (!patternName) return;
 
-            // 🚀 SMART PICT FILTERING (Based on your DB JSON)
             let isMyDeptRow = false;
 
-            // 1. Computer Engineering
-            if (coordinatorDept === "Computer Engineering") {
-                // Must have COMPUTER but NOT ELECTRONICS (taki ECE wali rows skip ho jayein)
-                if (patternName.includes("COMPUTER") && !patternName.includes("ELECTRONICS")) {
-                    isMyDeptRow = true;
-                }
+            // 🚀 ULTRA-FLEXIBLE KEYWORD MATCHING
+            // Computer Engineering (CE)
+            if (coordDept.includes("COMPUTER") && !coordDept.includes("ELECTRONICS")) {
+                if (patternName.includes("COMPUTER") && !patternName.includes("ELECTRONICS")) isMyDeptRow = true;
             } 
-            // 2. Information Technology
-            else if (coordinatorDept === "Information Technology") {
-                if (patternName.includes("INFORMATION TECHNOLOGY")) isMyDeptRow = true;
+            // Information Technology (IT)
+            else if (coordDept.includes("INFORMATION")) {
+                if (patternName.includes("INFORMATION")) isMyDeptRow = true;
             }
-            // 3. Electronics & TeleCommunication
-            else if (coordinatorDept === "Electronics & TeleCommunication") {
-                if (patternName.includes("ELECTRONICS") && (patternName.includes("TELECOMMUNICATION") || patternName.includes("TELECOM"))) {
-                    isMyDeptRow = true;
-                }
+            // ENTC
+            else if (coordDept.includes("TELECOMMUNICATION") || coordDept.includes("TELECOM")) {
+                if (patternName.includes("ELECTRONICS") && (patternName.includes("TELECOM") || patternName.includes("TELECOMMUNICATION"))) isMyDeptRow = true;
             }
-            // 4. Electronics & Computer
-            else if (coordinatorDept === "Electronics & Computer") {
-                // Must have BOTH keywords
-                if (patternName.includes("ELECTRONICS") && patternName.includes("COMPUTER")) {
-                    isMyDeptRow = true;
-                }
+            // ECE (Electronics & Computer)
+            else if (coordDept.includes("ELECTRONICS") && coordDept.includes("COMPUTER")) {
+                if (patternName.includes("ELECTRONICS") && patternName.includes("COMPUTER")) isMyDeptRow = true;
             }
-            // 5. Artificial Intelligance & Data Science
-            else if (coordinatorDept.includes("Artificial")) {
-                if (patternName.includes("ARTIFICIAL") || patternName.includes("DATA SCIENCE") || patternName.includes("AIDS")) {
-                    isMyDeptRow = true;
-                }
+            // AIDS
+            else if (coordDept.includes("ARTIFICIAL") || coordDept.includes("INTELLIGANCE")) {
+                if (patternName.includes("ARTIFICIAL") || patternName.includes("INTELLIGENCE") || patternName.includes("DATA SCIENCE") || patternName.includes("AIDS")) isMyDeptRow = true;
             }
 
             if (!isMyDeptRow) return;
 
-            const mobile = getVal('Mobile No'); 
+            const mobile = getVal('Mobile No');
             const rawName = getVal('Internal Examiner');
-
             if (!mobile || mobile.length < 5 || !rawName) return;
 
-            // Clean name: (ID)-Name -> Name
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
-            
-            // PICT Pattern Year Mapping
-            let yearScope = "2nd Yr (Regular)";
-            if (patternName.includes("T.E.")) yearScope = "3rd Yr (Regular)";
-            else if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
+            let yearScope = patternName.includes("T.E.") ? "3rd Yr (Regular)" : patternName.includes("B.E.") ? "4th Yr (Regular)" : "2nd Yr (Regular)";
 
-            // Subject Processing
             const fromDateStr = getVal('From Date') ? new Date(getVal('From Date')).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
             const endDateStr = getVal('End Date') ? new Date(getVal('End Date')).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const subject = getVal('Subject Name');
-            const subjectEntry = `${fromDateStr}|${endDateStr}|${subject}`;
+            const subjectEntry = `${fromDateStr}|${endDateStr}|${getVal('Subject Name')}`;
 
             if (facultyMap.has(mobile)) {
-                const existing = facultyMap.get(mobile);
-                if (!existing.assignedSubjects.includes(subjectEntry)) {
-                    existing.assignedSubjects.push(subjectEntry);
-                }
+                facultyMap.get(mobile).assignedSubjects.push(subjectEntry);
             } else {
                 facultyMap.set(mobile, {
-                    fullName: cleanedName,
-                    mobile,
-                    departmentId,
-                    email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
-                    academicYear: yearScope,
-                    validFrom: new Date(fromDateStr),
-                    validTill: new Date(endDateStr),
-                    assignedSubjects: [subjectEntry],
-                    isActive: true
+                    fullName: cleanedName, mobile, departmentId, email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
+                    academicYear: yearScope, validFrom: new Date(fromDateStr), validTill: new Date(endDateStr),
+                    assignedSubjects: [subjectEntry], isActive: true
                 });
             }
         });
 
-        const finalDataArray = Array.from(facultyMap.values());
-        
-        if (finalDataArray.length === 0) {
-            return res.status(200).json({ success: true, added: 0, updated: 0 });
+        const finalData = Array.from(facultyMap.values());
+        if (finalData.length === 0) {
+            // 🚨 Isse humein pata chalega ki backend ko kya mil raha hai
+            return res.status(200).json({ success: false, message: `Filtered 0 rows. Dept: ${coordDept}` });
         }
 
-        const bulkOps = finalDataArray.map(data => {
-            const randomID = Math.floor(1000 + Math.random() * 9000);
-            return {
-                updateOne: {
-                    filter: { mobile: data.mobile, departmentId: data.departmentId },
-                    update: { 
-                        $set: data,
-                        $setOnInsert: { voucherCode: `PICT-${deptName.substring(0,2).toUpperCase()}-${randomID}` }
-                    },
-                    upsert: true
-                }
-            };
-        });
+        const bulkOps = finalData.map(data => ({
+            updateOne: {
+                filter: { mobile: data.mobile, departmentId: data.departmentId },
+                update: { $set: data, $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } },
+                upsert: true
+            }
+        }));
 
         const result = await Faculty.bulkWrite(bulkOps);
-
-        res.status(201).json({ 
-            success: true,
-            added: result.upsertedCount, 
-            updated: result.modifiedCount 
-        });
+        res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
 
     } catch (error) {
-        console.error("PICT Master Bulk Error:", error);
-        res.status(500).json({ error: "Excel upload failed" });
+        res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 });
 
