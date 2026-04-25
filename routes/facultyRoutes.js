@@ -23,20 +23,27 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
         
-        // 🚀 Step 1: Excel ko raw arrays mein convert karo (No auto-headers)
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        if (rows.length < 2) return res.status(200).json({ success: false, message: "Excel file is empty." });
+        // 🚀 Step 1: Saari Sheets scan karo aur sabse zyada data wali sheet uthao
+        let rows = [];
+        workbook.SheetNames.forEach(sheetName => {
+            const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+            if (sheetData.length > rows.length) rows = sheetData;
+        });
 
-        // 🚀 Step 2: Columns ki position dhoondo (Dynamic Header Mapping)
+        // Agar bilkul data nahi mila
+        if (rows.length < 2) {
+            return res.status(200).json({ success: false, message: "Could not read any data from Excel sheets." });
+        }
+
+        // 🚀 Step 2: Columns ki position dhoondo (Dynamic Mapping)
         let colIdx = { pattern: -1, name: -1, mobile: -1, subject: -1, from: -1, to: -1 };
         
-        // Pehli 5 rows check karo headers dhoondne ke liye
-        for (let i = 0; i < Math.min(5, rows.length); i++) {
+        // Pehli 10 rows mein headers search karo (Safe side)
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
             rows[i].forEach((cell, idx) => {
                 if (!cell) return;
-                const val = String(cell).toLowerCase().replace(/[^a-z]/gi, '');
+                const val = String(cell).toLowerCase().trim().replace(/\s/g, "");
                 if (val.includes("patternname")) colIdx.pattern = idx;
                 if (val.includes("internalexaminer")) colIdx.name = idx;
                 if (val.includes("mobileno")) colIdx.mobile = idx;
@@ -47,33 +54,43 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
             if (colIdx.pattern !== -1 && colIdx.mobile !== -1) break;
         }
 
+        // Debugging for you: Agar koi column nahi mila
         if (colIdx.pattern === -1 || colIdx.mobile === -1) {
-            return res.status(200).json({ success: false, message: "Could not find 'Pattern Name' or 'Mobile No.' columns." });
+            return res.status(200).json({ 
+                success: false, 
+                message: `Headers missing! Pattern: ${colIdx.pattern !== -1 ? 'OK' : 'NOT FOUND'}, Mobile: ${colIdx.mobile !== -1 ? 'OK' : 'NOT FOUND'}` 
+            });
         }
 
         const facultyMap = new Map();
         const coordDept = (deptName || "").toUpperCase();
 
-        // 🚀 Step 3: Data Filter & Process
-        rows.forEach((row, index) => {
+        // 🚀 Step 3: Data Process & Strict Filtering
+        rows.forEach((row) => {
             const pattern = String(row[colIdx.pattern] || "").toUpperCase();
-            if (!pattern || pattern.includes("PATTERN NAME")) return; // Header row skip
+            if (!pattern || pattern.includes("PATTERN NAME")) return; // Skip headers
 
             let isMyDeptRow = false;
 
-            // PICT Branch Matching Logic
+            // PICT BRANCH SMART ISOLATION
+            // 1. COMPUTER ENGINEERING (CE)
             if (coordDept.includes("COMPUTER ENGINEERING") && !coordDept.includes("ELECTRONICS")) {
+                // Must have COMPUTER but NOT ELECTRONICS
                 if (pattern.includes("(COMPUTER)") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
             } 
+            // 2. INFORMATION TECHNOLOGY (IT)
             else if (coordDept.includes("INFORMATION")) {
                 if (pattern.includes("INFORMATION")) isMyDeptRow = true;
             }
-            else if (coordDept.includes("TELECOMMUNICATION") || coordDept.includes("TELECOM")) {
+            // 3. ENTC
+            else if (coordDept.includes("TELECOMMUNICATION")) {
                 if (pattern.includes("ELECTRONICS & TELECOM")) isMyDeptRow = true;
             }
+            // 4. ELECTRONICS & COMPUTER (ECE)
             else if (coordDept.includes("ELECTRONICS & COMPUTER")) {
                 if (pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDeptRow = true;
             }
+            // 5. AIDS
             else if (coordDept.includes("ARTIFICIAL")) {
                 if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE") || pattern.includes("AIDS")) isMyDeptRow = true;
             }
@@ -87,7 +104,7 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             const yearScope = pattern.includes("T.E.") ? "3rd Yr (Regular)" : pattern.includes("B.E.") ? "4th Yr (Regular)" : "2nd Yr (Regular)";
 
-            // Dates handling
+            // Handle Dates
             const fDate = row[colIdx.from] instanceof Date ? row[colIdx.from] : new Date();
             const tDate = row[colIdx.to] instanceof Date ? row[colIdx.to] : new Date();
             const subject = String(row[colIdx.subject] || "Exam Duty");
@@ -107,12 +124,15 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
         const finalData = Array.from(facultyMap.values());
-        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched ${coordDept} department.` });
+        if (finalData.length === 0) return res.status(200).json({ success: false, message: `No rows matched for ${coordDept}. Check branch names in Excel.` });
 
         const bulkOps = finalData.map(data => ({
             updateOne: {
                 filter: { mobile: data.mobile, departmentId: data.departmentId },
-                update: { $set: data, $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } },
+                update: { 
+                    $set: data, 
+                    $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2).toUpperCase()}-${Math.floor(1000+Math.random()*9000)}` } 
+                },
                 upsert: true
             }
         }));
@@ -121,8 +141,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: "Critical Server Error" });
+        console.error("PICT Master Crash:", error);
+        res.status(500).json({ success: false, message: "Critical Server Error: " + error.message });
     }
 });
 
