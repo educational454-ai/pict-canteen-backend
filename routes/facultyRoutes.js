@@ -3,6 +3,9 @@ const router = express.Router();
 const Faculty = require('../models/Faculty');
 const Department = require('../models/Department');
 const nodemailer = require('nodemailer');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const upload = multer({ storage: multer.memoryStorage() }); // File memory mein rakhega
 
 // Get all faculty for the dashboard
 router.get('/all', async (req, res) => {
@@ -11,6 +14,86 @@ router.get('/all', async (req, res) => {
         res.status(200).json(list);
     } catch (err) {
         res.status(500).json({ error: "Failed to fetch faculty" });
+    }
+});
+
+// 🚀 NEW ROUTE: Backend Excel Parsing & Filtering
+router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
+    try {
+        const { departmentId, deptName } = req.body; 
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+        // 1. Read Excel from Buffer
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rawData = XLSX.utils.sheet_to_json(sheet);
+
+        const facultyMap = new Map();
+        // Dept filtering: e.g., "COMPUTER" from "COMPUTER ENGINEERING"
+        const searchKeyword = deptName.split(' ')[0].toUpperCase(); 
+
+        // 2. Process and Filter
+        rawData.forEach(row => {
+            const getVal = (k) => {
+                const key = Object.keys(row).find(rk => rk.trim().toLowerCase() === k.toLowerCase());
+                return key ? String(row[key]) : "";
+            };
+
+            const patternName = getVal('Pattern Name').toUpperCase();
+            if (!patternName.includes(searchKeyword)) return; // Skip other depts
+
+            const mobile = getVal('Mobile No.').trim();
+            const rawName = getVal('Internal Examiner').trim();
+            if (!mobile || !rawName) return;
+
+            const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
+            
+            // Year determination
+            let yearScope = "2nd Yr (Regular)";
+            if (patternName.includes("T.E.")) yearScope = "3rd Yr (Regular)";
+            if (patternName.includes("B.E.")) yearScope = "4th Yr (Regular)";
+
+            facultyMap.set(mobile, {
+                fullName: cleanedName,
+                mobile,
+                departmentId,
+                email: `${cleanedName.replace(/\s+/g, '.').toLowerCase()}@pict.edu`,
+                academicYear: yearScope,
+                validFrom: new Date(getVal('From Date')),
+                validTill: new Date(getVal('End Date')),
+                assignedSubjects: [getVal('Subject Name')],
+                isActive: true
+            });
+        });
+
+        const finalData = Array.from(facultyMap.values());
+        
+        // 3. Bulk DB Update
+        const bulkOps = finalData.map(data => {
+            const randomID = Math.floor(1000 + Math.random() * 9000);
+            return {
+                updateOne: {
+                    filter: { mobile: data.mobile, departmentId: data.departmentId },
+                    update: { 
+                        $set: data,
+                        $setOnInsert: { voucherCode: `PICT-${deptName.substring(0,2).toUpperCase()}-${randomID}` }
+                    },
+                    upsert: true
+                }
+            };
+        });
+
+        const result = await Faculty.bulkWrite(bulkOps);
+
+        res.status(201).json({ 
+            success: true,
+            added: result.upsertedCount, 
+            updated: result.modifiedCount 
+        });
+
+    } catch (error) {
+        console.error("Backend Error:", error);
+        res.status(500).json({ error: "Server processing failed" });
     }
 });
 
