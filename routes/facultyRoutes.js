@@ -129,7 +129,7 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
                             isActive: true,
                             email: `${v.fullName.split(' ')[0].toLowerCase()}@pict.edu`
                         },
-                        $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${randomID}` }
+                        $setOnInsert: { voucherCode: `PICT-${dept.code || 'DEPT'}-${randomID}` }
                     },
                     upsert: true
                 }
