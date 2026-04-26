@@ -137,7 +137,8 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         });
 
         const result = await Faculty.bulkWrite(bulkOps);
-        res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
+        const totalProcessed = result.upsertedCount + result.matchedCount;
+        res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount, total: totalProcessed});
 
     } catch (err) {
         console.error(err);
