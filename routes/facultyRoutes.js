@@ -23,20 +23,15 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "File not received" });
 
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-        
-        // 🚀 Step 1: Har sheet check karo (Kahin data hidden sheet mein toh nahi?)
         let rows = [];
         workbook.SheetNames.forEach(name => {
             const data = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
             if (data.length > rows.length) rows = data;
         });
 
-        if (rows.length < 2) return res.status(200).json({ success: false, message: "Excel is empty!" });
-
-        // 🚀 Step 2: Columns dhoondo (Ab hum 50 rows scan karenge, safe side)
+        // 1. Column Identification (Previous logic)
         let colIdx = { pattern: -1, name: -1, mobile: -1, subject: -1, from: -1, to: -1 };
-        
-        for (let i = 0; i < Math.min(50, rows.length); i++) {
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
             rows[i].forEach((cell, idx) => {
                 if (!cell) return;
                 const s = String(cell).toLowerCase().replace(/[^a-z]/g, "");
@@ -50,99 +45,103 @@ router.post('/bulk-upload-file', upload.single('file'), async (req, res) => {
             if (colIdx.pattern !== -1 && colIdx.mobile !== -1) break;
         }
 
-        if (colIdx.pattern === -1 || colIdx.mobile === -1) {
-            return res.status(200).json({ success: false, message: "Error: Could not find 'Pattern Name' column. Check Excel headers." });
-        }
-
-        const facultyMap = new Map();
+        // 2. Group all duties by Faculty Mobile
+        const tempGroup = {};
         const coordDept = (deptName || "").toUpperCase();
 
-        // 🚀 Step 3: Branch Logic (Simplified & Nuclear)
         rows.forEach((row) => {
             const pattern = String(row[colIdx.pattern] || "").toUpperCase();
             if (!pattern || pattern.includes("PATTERN NAME") || pattern.length < 10) return;
 
-            let isMyDeptRow = false;
+            // PICT Branch Filter (Same as before)
+            let isMyDept = false;
+            if (coordDept === "COMPUTER ENGINEERING" && pattern.includes("COMPUTER") && !pattern.includes("ELECTRONICS")) isMyDept = true;
+            else if (coordDept === "INFORMATION TECHNOLOGY" && pattern.includes("INFORMATION")) isMyDept = true;
+            else if (coordDept.includes("TELECOMMUNICATION") && pattern.includes("ELECTRONICS") && pattern.includes("TELE")) isMyDept = true;
+            else if (coordDept === "ELECTRONICS & COMPUTER" && pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDept = true;
+            else if (coordDept.includes("ARTIFICIAL") && (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE"))) isMyDept = true;
 
-            // 1. Computer Engineering (CE)
-            if (coordDept === "COMPUTER ENGINEERING") {
-                // Must have COMPUTER, but NOT ELECTRONICS (Strict CE)
-                if (pattern.includes("COMPUTER") && !pattern.includes("ELECTRONICS")) isMyDeptRow = true;
-            } 
-            // 2. Information Technology (IT)
-            else if (coordDept === "INFORMATION TECHNOLOGY") {
-                if (pattern.includes("INFORMATION")) isMyDeptRow = true;
-            }
-            // 3. ENTC
-            else if (coordDept.includes("TELECOMMUNICATION")) {
-                if (pattern.includes("ELECTRONICS") && (pattern.includes("TELECOM") || pattern.includes("TELECOMMUNICATION"))) isMyDeptRow = true;
-            }
-            // 4. Electronics & Computer (ECE)
-            else if (coordDept === "ELECTRONICS & COMPUTER") {
-                if (pattern.includes("ELECTRONICS") && pattern.includes("COMPUTER")) isMyDeptRow = true;
-            }
-            // 5. AI & DS
-            else if (coordDept.includes("ARTIFICIAL")) {
-                if (pattern.includes("ARTIFICIAL") || pattern.includes("DATA SCIENCE")) isMyDeptRow = true;
-            }
+            if (!isMyDept) return;
 
-            if (!isMyDeptRow) return;
-
-            // Extract values
             const mobile = String(row[colIdx.mobile] || "").trim().replace(/[^0-9]/g, "");
-            const rawName = String(row[colIdx.name] || "").trim();
-            
-            if (mobile.length < 10 || !rawName || rawName === "undefined") return;
+            if (mobile.length < 10) return;
 
+            if (!tempGroup[mobile]) tempGroup[mobile] = { rows: [], info: {} };
+            
+            const rawName = String(row[colIdx.name] || "").trim();
             const cleanedName = rawName.includes(')-') ? rawName.split(')-')[1].trim() : rawName;
             const year = pattern.includes("T.E.") ? "3rd Yr" : pattern.includes("B.E.") ? "4th Yr" : "2nd Yr";
-            
-            // Date Logic
-            const d1 = row[colIdx.from] instanceof Date ? row[colIdx.from].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const d2 = row[colIdx.to] instanceof Date ? row[colIdx.to].toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const sub = String(row[colIdx.subject] || "Exam Duty");
-            const subKey = `${d1}|${d2}|${sub}`;
 
-            if (facultyMap.has(mobile)) {
-                if (!facultyMap.get(mobile).assignedSubjects.includes(subKey)) {
-                    facultyMap.get(mobile).assignedSubjects.push(subKey);
-                }
-            } else {
-                facultyMap.set(mobile, {
-                    fullName: cleanedName, mobile, departmentId,
-                    email: `${cleanedName.split(' ')[0].toLowerCase()}@pict.edu`,
-                    academicYear: `${year} (Regular)`, validFrom: new Date(d1), validTill: new Date(d2),
-                    assignedSubjects: [subKey], isActive: true
-                });
-            }
+            tempGroup[mobile].info = { fullName: cleanedName, academicYear: `${year} (Regular)` };
+            tempGroup[mobile].rows.push({
+                from: new Date(row[colIdx.from]),
+                to: new Date(row[colIdx.to]),
+                subject: String(row[colIdx.subject] || "Exam Duty")
+            });
         });
 
-        const finalData = Array.from(facultyMap.values());
-        
-        if (finalData.length === 0) {
-            return res.status(200).json({ 
-                success: false, 
-                message: `Matched 0 rows for ${coordDept}. Tip: Check if the Branch name in Excel matches your department.` 
-            });
-        }
+        // 3. SMART SPLITTING LOGIC
+        const finalVouchers = [];
+        const GAP_THRESHOLD_DAYS = 2; // 2 din se zyada gap = Naya Voucher
 
-        const bulkOps = finalData.map(d => ({
-            updateOne: {
-                filter: { mobile: d.mobile, departmentId: d.departmentId },
-                update: { 
-                    $set: d, 
-                    $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${Math.floor(1000+Math.random()*9000)}` } 
-                },
-                upsert: true
-            }
-        }));
+        Object.keys(tempGroup).forEach(mobile => {
+            const faculty = tempGroup[mobile];
+            // Sort duties by 'from' date
+            faculty.rows.sort((a, b) => a.from - b.from);
+
+            let currentSession = null;
+
+            faculty.rows.forEach(duty => {
+                if (!currentSession) {
+                    currentSession = { ...faculty.info, mobile, validFrom: duty.from, validTill: duty.to, subjects: [duty] };
+                } else {
+                    const diffTime = duty.from - currentSession.validTill;
+                    const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
+                    if (diffDays <= GAP_THRESHOLD_DAYS) {
+                        // Merge: Expand validity
+                        if (duty.to > currentSession.validTill) currentSession.validTill = duty.to;
+                        currentSession.subjects.push(duty);
+                    } else {
+                        // Split: Save current and start new
+                        finalVouchers.push(currentSession);
+                        currentSession = { ...faculty.info, mobile, validFrom: duty.from, validTill: duty.to, subjects: [duty] };
+                    }
+                }
+            });
+            if (currentSession) finalVouchers.push(currentSession);
+        });
+
+        // 4. Bulk Write to DB
+        const bulkOps = finalVouchers.map(v => {
+            const randomID = Math.floor(1000 + Math.random() * 9000);
+            const assignedSubjects = v.subjects.map(s => `${s.from.toISOString().split('T')[0]}|${s.to.toISOString().split('T')[0]}|${s.subject}`);
+            
+            return {
+                updateOne: {
+                    // Filter: Unique combination of Mobile + Start Date
+                    filter: { mobile: v.mobile, departmentId, validFrom: v.validFrom },
+                    update: { 
+                        $set: { 
+                            ...v, 
+                            assignedSubjects,
+                            departmentId, 
+                            isActive: true,
+                            email: `${v.fullName.split(' ')[0].toLowerCase()}@pict.edu`
+                        },
+                        $setOnInsert: { voucherCode: `PICT-${coordDept.substring(0,2)}-${randomID}` }
+                    },
+                    upsert: true
+                }
+            };
+        });
 
         const result = await Faculty.bulkWrite(bulkOps);
         res.status(201).json({ success: true, added: result.upsertedCount, updated: result.modifiedCount });
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: "Critical Error: " + err.message });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
