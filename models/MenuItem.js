@@ -4,7 +4,7 @@ const menuItemSchema = new mongoose.Schema({
     itemName: { type: String, required: true },
     category: { 
         type: String, 
-        enum: ['Snacks', 'Beverages', 'Lunch', 'Dessert'], 
+        enum: ['Breakfast', 'Beverages', 'Quick Bites', 'Fasting Specials (Upvas)', 'Lunch', 'Dessert'], 
         required: true 
     },
     price: { type: Number, required: true },
