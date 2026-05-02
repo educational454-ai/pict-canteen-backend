@@ -4,6 +4,16 @@ const Order = require('../models/Order');
 const Faculty = require('../models/Faculty');
 const Guest = require('../models/Guest');
 
+const normalizeVoucherDateRange = (validFrom, validTill) => {
+    const from = new Date(validFrom);
+    const till = new Date(validTill);
+
+    from.setHours(0, 0, 0, 0);
+    till.setHours(23, 59, 59, 999);
+
+    return { from, till };
+};
+
 const emitOrderEvent = (req, eventName, payload) => {
     const io = req.app.get('io');
     if (io) {
@@ -68,10 +78,10 @@ router.post('/place', async (req, res) => {
             isActive = guest.isActive;
         }
 
-        validTill.setHours(23, 59, 59, 999);
+        const { from, till } = normalizeVoucherDateRange(validFrom, validTill);
         const now = new Date();
 
-        if (!isActive || now < validFrom || now > validTill) {
+        if (!isActive || now < from || now > till) {
             return res.status(400).json({ error: "Access Denied: Your voucher is expired or inactive." });
         }
 
