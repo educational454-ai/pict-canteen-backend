@@ -9,6 +9,6 @@ const menuItemSchema = new mongoose.Schema({
     },
     price: { type: Number, required: true },
     isAvailable: { type: Boolean, default: true }
-}, { timestamps: true });
+},  { timestamps: true });
 
 module.exports = mongoose.model('MenuItem', menuItemSchema);
