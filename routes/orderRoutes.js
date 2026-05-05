@@ -189,6 +189,16 @@ router.put('/:id/status', async (req, res) => {
 
 router.delete('/delete/:id', async (req, res) => {
     try {
+        const order = await Order.findById(req.params.id);
+
+        if (!order) {
+            return res.status(404).json({ error: "Order not found." });
+        }
+
+        if (order.status === 'Completed') {
+            return res.status(400).json({ error: "Completed orders cannot be canceled." });
+        }
+
         const deletedOrder = await Order.findByIdAndDelete(req.params.id);
         if (deletedOrder) {
             emitOrderEvent(req, 'order:deleted', { orderId: deletedOrder._id });
